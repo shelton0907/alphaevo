@@ -107,7 +107,11 @@ def test_param_optimizer_searches_entry_tunables() -> None:
         candidate.target == "entry.conditions[indicator=rsi_14].value"
         for candidate in result.candidates
     )
-    assert {candidate.to_value for candidate in result.candidates if candidate.target} == {
+    assert {
+        candidate.to_value
+        for candidate in result.candidates
+        if candidate.target == "entry.conditions[indicator=rsi_14].value"
+    } == {
         10.0,
         20.0,
     }
@@ -138,6 +142,22 @@ def test_param_optimizer_tunes_indicator_periods() -> None:
         if candidate.target is not None
     }
     assert {"rsi_7", "rsi_21"} <= changed_indicators
+
+
+def test_param_optimizer_parallel_workers_preserve_results() -> None:
+    strategy = _make_strategy()
+
+    result = ParamOptimizer(slippage=0.0, commission=0.0, min_data_days=15).optimize(
+        strategy,
+        {"TEST": _make_ohlcv()},
+        _make_batch(strategy),
+        spaces=["entry"],
+        max_candidates=8,
+        parallel_workers=2,
+    )
+
+    assert result.best_candidate is not None
+    assert len(result.candidates) > 1
 
 
 def test_param_optimizer_tunes_max_holding_days() -> None:
@@ -191,6 +211,54 @@ def test_param_optimizer_includes_range_extremes_early() -> None:
     assert 0.8 in changed_values
 
 
+def test_param_optimizer_can_add_entry_guard_candidates() -> None:
+    strategy = _make_strategy()
+    strategy.params.tunable = []
+
+    result = ParamOptimizer(slippage=0.0, commission=0.0, min_data_days=15).optimize(
+        strategy,
+        {"TEST": _make_ohlcv()},
+        _make_batch(strategy),
+        spaces=["entry"],
+        max_candidates=8,
+    )
+
+    guard_candidates = [
+        candidate for candidate in result.candidates if candidate.target == "entry.guards"
+    ]
+    assert guard_candidates
+    assert any(candidate.strategy.entry.guards for candidate in guard_candidates)
+    assert any("Add entry guard" in change for candidate in guard_candidates for change in candidate.changes)
+    assert any(
+        "Optimization notes (parameter optimization):" in candidate.strategy.description
+        for candidate in guard_candidates
+    )
+
+
+def test_param_optimizer_combines_entry_guards_with_tunables() -> None:
+    strategy = _make_strategy()
+
+    result = ParamOptimizer(slippage=0.0, commission=0.0, min_data_days=15).optimize(
+        strategy,
+        {"TEST": _make_ohlcv()},
+        _make_batch(strategy),
+        spaces=["params"],
+        max_candidates=20,
+        max_changes=2,
+    )
+
+    combined = [
+        candidate
+        for candidate in result.candidates
+        if candidate.target == "entry.guards" and len(candidate.changes) >= 2
+    ]
+    assert combined
+    assert any(
+        any(change.startswith("RSI threshold:") for change in candidate.changes)
+        for candidate in combined
+    )
+
+
 def test_param_optimizer_report_mentions_best_candidate() -> None:
     strategy = _make_strategy()
     result = ParamOptimizer(slippage=0.0, commission=0.0, min_data_days=15).optimize(
@@ -205,6 +273,8 @@ def test_param_optimizer_report_mentions_best_candidate() -> None:
 
     assert "# Parameter Optimization Report" in report
     assert "Tunables considered: 1" in report
+    assert "## Best Strategy Candidate" in report
+    assert "### Strategy Rules" in report
     assert result.best_candidate_id is not None
     assert result.best_candidate_id in report
 
@@ -260,6 +330,35 @@ def test_param_optimizer_can_full_evaluate_top_fast_candidates() -> None:
 
     assert result.full_eval_top_n == 2
     assert sum(candidate.evaluation_mode == "full" for candidate in result.candidates) == 2
+
+
+def test_param_optimizer_robust_gates_require_full_evaluation() -> None:
+    strategy = _make_strategy()
+
+    result = ParamOptimizer(slippage=0.0, commission=0.0, min_data_days=15).optimize(
+        strategy,
+        {"TEST": _make_ohlcv()},
+        _make_batch(strategy),
+        spaces=["entry"],
+        max_candidates=6,
+        evaluation_mode="fast",
+        full_eval_top_n=2,
+        max_train_val_gap=1.0,
+    )
+
+    full_candidates = [candidate for candidate in result.candidates if candidate.evaluation_mode == "full"]
+    fast_candidates = [candidate for candidate in result.candidates if candidate.evaluation_mode == "fast"]
+
+    assert len(full_candidates) == 2
+    assert fast_candidates
+    assert all(
+        "full_eval_required_for_robust_gates" in candidate.gate_reasons
+        for candidate in fast_candidates
+    )
+    assert all(
+        "full_eval_required_for_robust_gates" not in candidate.gate_reasons
+        for candidate in full_candidates
+    )
 
 
 def test_param_optimizer_does_not_export_failed_gate_candidate(tmp_path: Path) -> None:

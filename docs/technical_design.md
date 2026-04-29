@@ -164,6 +164,8 @@ class TunableParam(BaseModel):
                                  # or "entry.conditions[indicator=macd_histogram].indicator.signal"
                                  # or "entry.conditions[indicator=bollinger_band_width].indicator"
                                  # or "entry.conditions[indicator=bollinger_band_width].indicator.std"
+                                 # or "entry.triggers[indicator=breakout_high_20d].indicator"
+                                 # or "entry.guards[indicator=price_position_120d].indicator"
                                  # or "exit.take_profit.target" / "exit.stop_loss.atr_period"
                                  # or "exit.max_holding_days"
                                  #    (indicator / MA / MACD / Bollinger / ATR / holding tuning)

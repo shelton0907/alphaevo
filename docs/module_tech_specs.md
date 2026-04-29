@@ -22,7 +22,7 @@
 | DSL 解析器 | ✅ AGENTS.md §7 | ✅ `strategy/dsl/parser.py` | ✅ |
 | 数据适配器接口 | ✅ technical_design §3.1 | ✅ `data/adapter.py` | ✅ |
 | CLI | ✅ AGENTS.md §12 | ✅ `cli/main.py` | ✅ |
-| 内置策略模板 | ✅ | ✅ 6 个 YAML 文件 (2个标记 experimental) | ✅ |
+| 内置策略模板 | ✅ | ✅ 7 个 YAML 文件 (2个标记 experimental) | ✅ |
 | Alpha Factory | ✅ | ✅ `alpha_factory/` (LLM 因子发现 → 进化循环集成) | ✅ |
 
 ---
@@ -677,7 +677,7 @@ conditions:
 
 ### 策略引用的所有指标清单
 
-从 4 个内置策略 YAML 中提取。**实现层级**与 `AGENTS.md` §9 一致：
+从内置策略 YAML 中提取。**实现层级**与 `AGENTS.md` §9 一致：
 
 | 指标名 | 使用策略 | 实现层级 | 数据需求 | MVP 降级 |
 |--------|----------|----------|----------|----------|
@@ -696,6 +696,8 @@ conditions:
 | `bollinger_band_width / bollinger_band_width_Nd / bollinger_band_width_Nd_stdS` | 波动突破 | **L1 MVP** | OHLCV | — |
 | `price_above_bollinger_upper / price_above_bollinger_upper_Nd / price_above_bollinger_upper_Nd_stdS` | 波动突破 | **L1 MVP** | OHLCV | — |
 | `price_below_bollinger_lower / price_below_bollinger_lower_Nd / price_below_bollinger_lower_Nd_stdS` | 波动突破 | **L1 MVP** | OHLCV | — |
+| `breakout_high_Nd` | 突破/新高买点 | **L1 MVP** | OHLCV | — |
+| `price_position_Nd` | 区间位置过滤 | **L1 MVP** | OHLCV | — |
 | `close_below_ma10` | 退出条件 | **L1 MVP** | OHLCV | — |
 | `relative_strength_Nd` | 趋势回踩 | **L2 扩展** | 基准指数 | → 返回 0.0 |
 | `st_flag` | 趋势/反转/轮动 | **L2 扩展** | 股票标记 | → 返回 False |
@@ -726,6 +728,7 @@ macd_cross_bullish/macd_cross_bullish_fastN_slowM_signalK,
 bollinger_band_width/bollinger_band_width_Nd/bollinger_band_width_Nd_stdS,
 price_above_bollinger_upper/price_above_bollinger_upper_Nd/price_above_bollinger_upper_Nd_stdS,
 price_below_bollinger_lower/price_below_bollinger_lower_Nd/price_below_bollinger_lower_Nd_stdS,
+breakout_high_Nd, price_position_Nd,
 momentum_Nd, avg_volume_Nd, days_since_high_Nd, days_since_low_Nd,
 rsi_N_zscore, volatility_Nd
 ```
@@ -898,6 +901,15 @@ Walk-Forward:
 - `backtest.walk_forward_pass_gap`
 
 当前默认是**按信号时间顺序的滚动折叠**，并在报告中显式输出 protocol 与每折结果；更严格的日历型 `12m → 1m` canonical protocol 仍属于后续增强项。
+
+`alphaevo optimize` 已能把完整评估中的稳定性结果作为候选门槛：
+`--reject-overfit` 会拒绝被 train/validation/test 或参数敏感度检查标记为过拟合的候选；
+`--max-train-val-gap`、`--max-val-test-gap`、`--max-walk-forward-gap`
+限制跨区间表现落差；`--min-walk-forward-pass-rate` 要求足够多滚动折叠通过。
+`--objective robust_profit_quality` 则把收益质量与这些稳定性指标合成一个排序分数，
+用于优先查看收益与泛化表现更均衡的候选。
+在 `--evaluation-mode fast` 下，这些稳健门槛只对 `--full-eval-top`
+覆盖到的完整复评候选生效。
 
 ```python
 class WalkForwardValidator:

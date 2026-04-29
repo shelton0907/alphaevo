@@ -225,6 +225,8 @@ class Evaluator:
         return OverallMetrics(
             win_rate=round(win_rate, 4),
             avg_return=round(avg_return, 6),
+            avg_win_return=round(avg_win, 6),
+            avg_loss_return=round(-avg_loss, 6) if losses else 0.0,
             median_return=round(median_return, 6),
             profit_loss_ratio=round(profit_loss_ratio, 4),
             max_drawdown=round(max_dd, 4),

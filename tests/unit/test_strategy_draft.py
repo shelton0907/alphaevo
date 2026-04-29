@@ -52,6 +52,35 @@ def test_draft_reversal_uses_reversal_conditions() -> None:
     ]
 
 
+def test_draft_breakout_uses_explicit_breakout_trigger_and_trailing_exit() -> None:
+    strategy = StrategyDraftBuilder().from_text(
+        "美股放量突破20日新高，低波动平台收缩后启动",
+        market="us",
+    )
+
+    StrategyParser().assert_valid(strategy)
+    assert strategy.meta.category == StrategyCategory.TREND
+    assert strategy.exit.take_profit.type == "trailing"
+    assert [condition.indicator for condition in strategy.entry.triggers] == [
+        "breakout_high_20d",
+        "volume_ratio_1d_20d",
+        "body_to_range_ratio",
+    ]
+    assert {condition.indicator for condition in strategy.entry.guards} >= {
+        "close_above_ma20",
+        "ma20_slope",
+        "price_position_120d",
+        "bollinger_band_width_20d",
+    }
+    assert {param.target for param in strategy.params.tunable} >= {
+        "entry.triggers[indicator=breakout_high_20d].indicator",
+        "entry.triggers[indicator=volume_ratio_1d_20d].indicator",
+        "entry.guards[indicator=price_position_120d].indicator",
+        "exit.take_profit.trigger_pct",
+        "exit.take_profit.trail_pct",
+    }
+
+
 def test_draft_extracts_explicit_ma_exit_before_holding_days() -> None:
     strategy = StrategyDraftBuilder().from_text(
         "RSI超跌反转，跌破10日线卖出，止损3%，持有5天",

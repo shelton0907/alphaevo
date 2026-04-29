@@ -113,6 +113,8 @@ class TestIndicatorRegistry:
         assert "macd_cross_bullish_fastN_slowM_signalK" in available
         assert "bollinger_band_width_Nd" in available
         assert "bollinger_band_width_Nd_stdS" in available
+        assert "breakout_high_Nd" in available
+        assert "price_position_Nd" in available
         assert "volume_ratio_1d_Nd" in available
         assert "relative_strength_Nd" in available
 
@@ -181,11 +183,20 @@ class TestIndicatorRegistry:
         bollinger_mid = float(bollinger_window.mean())
         bollinger_std = float(bollinger_window.std())
         expected_bollinger_width = float((4 * bollinger_std) / bollinger_mid)
+        prior_high = df["high"].iloc[idx - 20 : idx].max()
+        expected_breakout = bool(df["close"].iloc[idx] > prior_high)
+        position_window = df["close"].iloc[idx - 59 : idx + 1]
+        expected_price_position = float(
+            (df["close"].iloc[idx] - position_window.min())
+            / (position_window.max() - position_window.min())
+        )
 
         assert IndicatorRegistry.is_registered("rsi_7") is True
         assert IndicatorRegistry.is_registered("atr_21") is True
         assert IndicatorRegistry.is_registered("bollinger_band_width_30d") is True
         assert IndicatorRegistry.is_registered("bollinger_band_width_30d_std1p5") is True
+        assert IndicatorRegistry.is_registered("breakout_high_20d") is True
+        assert IndicatorRegistry.is_registered("price_position_60d") is True
         assert IndicatorRegistry.is_registered("volume_ratio_1d_10d") is True
         assert IndicatorRegistry.is_registered("relative_strength_30d") is True
         assert 0 <= IndicatorRegistry.compute("rsi_7", df, idx) <= 100
@@ -211,6 +222,10 @@ class TestIndicatorRegistry:
         assert isinstance(
             IndicatorRegistry.compute("price_below_bollinger_lower_30d_std1p5", df, idx),
             bool,
+        )
+        assert IndicatorRegistry.compute("breakout_high_20d", df, idx) is expected_breakout
+        assert IndicatorRegistry.compute("price_position_60d", df, idx) == pytest.approx(
+            expected_price_position
         )
         assert isinstance(IndicatorRegistry.compute("rsi_21_zscore", df, idx), float)
         assert IndicatorRegistry.compute("volume_ratio_1d_10d", df, idx) == pytest.approx(

@@ -56,6 +56,8 @@ _WINDOW_TEMPLATE_NAMES = {
     "price_above_bollinger_upper_Nd_stdS",
     "price_below_bollinger_lower_Nd",
     "price_below_bollinger_lower_Nd_stdS",
+    "breakout_high_Nd",
+    "price_position_Nd",
     "volume_ratio_1d_Nd",
     "momentum_Nd",
     "avg_volume_Nd",
@@ -262,6 +264,28 @@ def _compute_volatility(df: pd.DataFrame, idx: int, lookback: int) -> float:
     if len(returns) < 5:
         return 0.0
     return float(returns.std() * (250**0.5))
+
+
+def _compute_price_position(df: pd.DataFrame, idx: int, lookback: int) -> float:
+    """Price position in the rolling close range. 0 = low, 1 = high."""
+    if lookback <= 0:
+        return 0.5
+    lookback = min(lookback, idx + 1)
+    if lookback < 2:
+        return 0.5
+    window = df["close"].iloc[idx - lookback + 1 : idx + 1]
+    lo, hi = window.min(), window.max()
+    if hi == lo:
+        return 0.5
+    return float((df["close"].iloc[idx] - lo) / (hi - lo))
+
+
+def _compute_breakout_high(df: pd.DataFrame, idx: int, lookback: int) -> bool:
+    """Close breaks above the prior rolling high, excluding the current bar."""
+    if lookback <= 0 or idx < lookback:
+        return False
+    prior_high = df["high"].iloc[idx - lookback : idx].max()
+    return bool(float(df["close"].iloc[idx]) > float(prior_high))
 
 
 def _compute_relative_strength(
@@ -694,6 +718,38 @@ def _build_templated_indicator(name: str) -> IndicatorFn | None:
             return bool(df["close"].iloc[idx] < lower)
 
         return below_bollinger_lower
+
+    if match := re.fullmatch(r"breakout_high_(\d+)d", name):
+        period = _parse_positive_period(match.group(1))
+        if period is None:
+            return None
+        lookback = period
+
+        def breakout_high(
+            df: pd.DataFrame,
+            idx: int,
+            ctx: IndicatorContext | None = None,
+        ) -> bool:
+            del ctx
+            return _compute_breakout_high(df, idx, lookback)
+
+        return breakout_high
+
+    if match := re.fullmatch(r"price_position_(\d+)d", name):
+        period = _parse_positive_period(match.group(1))
+        if period is None:
+            return None
+        lookback = period
+
+        def price_position(
+            df: pd.DataFrame,
+            idx: int,
+            ctx: IndicatorContext | None = None,
+        ) -> float:
+            del ctx
+            return _compute_price_position(df, idx, lookback)
+
+        return price_position
 
     if match := re.fullmatch(r"volume_ratio_1d_(\d+)d", name):
         period = _parse_positive_period(match.group(1))
@@ -1285,11 +1341,7 @@ def price_position_52w(df: pd.DataFrame, idx: int) -> float:
     lookback = min(250, idx + 1)
     if lookback < 20:
         return 0.5
-    window = df["close"].iloc[idx - lookback + 1 : idx + 1]
-    lo, hi = window.min(), window.max()
-    if hi == lo:
-        return 0.5
-    return float((df["close"].iloc[idx] - lo) / (hi - lo))
+    return _compute_price_position(df, idx, lookback)
 
 
 @IndicatorRegistry.register("volatility_20d")

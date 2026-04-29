@@ -69,6 +69,23 @@ class TestStrategyParser:
         assert "entry.conditions[indicator=rsi_14].indicator" in tunable_targets
         assert "exit.max_holding_days" in tunable_targets
 
+    def test_parse_builtin_volatility_compression_breakout(self) -> None:
+        path = BUILTIN_DIR / "volatility_compression_breakout.yaml"
+        if not path.exists():
+            pytest.skip("Builtin strategy file not found")
+        strategy = self.parser.parse_file(path)
+        diagnostics = self.parser.diagnose(strategy)
+        tunable_targets = {param.target for param in strategy.params.tunable}
+
+        assert diagnostics.errors == []
+        assert strategy.meta.id == "volatility_compression_breakout_v1"
+        assert strategy.entry.triggers[0].indicator == "breakout_high_20d"
+        assert strategy.exit.take_profit.type == "trailing"
+        assert "entry.triggers[indicator=breakout_high_20d].indicator" in tunable_targets
+        assert "entry.guards[indicator=price_position_120d].indicator" in tunable_targets
+        assert "exit.take_profit.trigger_pct" in tunable_targets
+        assert "exit.take_profit.trail_pct" in tunable_targets
+
     def test_parse_invalid_yaml(self) -> None:
         with pytest.raises(StrategyParseError):
             self.parser.parse_yaml("{{invalid yaml")

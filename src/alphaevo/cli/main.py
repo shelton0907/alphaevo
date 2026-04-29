@@ -135,17 +135,38 @@ def version() -> None:
 @app.command()
 def demo(
     real: bool = typer.Option(False, "--real", help="Use real market data (requires network)"),
+    synthetic: bool = typer.Option(False, "--synthetic", help="Use synthetic data"),
     market: str = typer.Option("us", "--market", help="Market for real data: us or cn"),
 ) -> None:
-    """Run the showcase demo — synthetic by default, or `--real` with live market data."""
+    """Run the quick demo — real snapshot by default, synthetic with `--synthetic`."""
     if real:
         from alphaevo.cli.demo import run_real_demo
 
         run_real_demo(console, market=market)
-    else:
+    elif synthetic:
         from alphaevo.cli.demo import run_demo
 
         run_demo(console)
+    else:
+        from alphaevo.cli.demo import run_showcase
+
+        run_showcase(console)
+
+
+@app.command()
+def showcase(
+    live: bool = typer.Option(False, "--live", help="Try live yfinance before snapshot fallback"),
+    write_docs: bool = typer.Option(
+        False,
+        "--write-docs",
+        help="Also update docs/reports/showcase_rsi_reversion_real_snapshot.md",
+    ),
+    output: str = typer.Option("reports/showcase", "--output", "-o", help="Report directory"),
+) -> None:
+    """Run the star-facing real-data showcase and generate a report."""
+    from alphaevo.cli.demo import run_showcase
+
+    run_showcase(console, live=live, write_docs=write_docs, output_dir=output)
 
 
 # ── Backward-compat re-exports (used by tests) ────────────────────────

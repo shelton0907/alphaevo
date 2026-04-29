@@ -56,7 +56,7 @@ class StrategyDraftBuilder:
         category = _infer_category(text)
         style = _infer_style(text, category)
         triggers = self._entry_conditions(text, category, style)
-        guards = self._entry_filters(text, market_type)
+        guards = self._entry_filters(text, market_type, style)
         exit_rules = self._exit_rules(text)
 
         meta = StrategyMeta(
@@ -211,10 +211,9 @@ class StrategyDraftBuilder:
 
         if style == "breakout":
             return [
-                StrategyCondition(indicator="close_above_ma20", op="==", value=True),
-                StrategyCondition(indicator="momentum_10d", op=">", value=0.03),
-                StrategyCondition(indicator="volume_ratio_1d_5d", op=">", value=1.50),
-                StrategyCondition(indicator="body_to_range_ratio", op=">", value=0.45),
+                StrategyCondition(indicator="breakout_high_20d", op="==", value=True),
+                StrategyCondition(indicator="volume_ratio_1d_20d", op=">=", value=1.20),
+                StrategyCondition(indicator="body_to_range_ratio", op=">=", value=0.45),
             ]
 
         return [
@@ -228,8 +227,21 @@ class StrategyDraftBuilder:
         self,
         text: str,
         market: MarketType,
+        style: str,
     ) -> list[StrategyCondition]:
         filters: list[StrategyCondition] = []
+        if style == "breakout":
+            filters.extend(
+                [
+                    StrategyCondition(indicator="close_above_ma20", op="==", value=True),
+                    StrategyCondition(indicator="ma20_slope", op=">", value=0.0),
+                    StrategyCondition(indicator="price_position_120d", op=">=", value=0.65),
+                ]
+            )
+            if _contains_any(text, _COMPRESSION_TERMS):
+                filters.append(
+                    StrategyCondition(indicator="bollinger_band_width_20d", op="<=", value=0.14)
+                )
         if market == MarketType.A_SHARE or _contains_any(text, ("st", "退市", "风险警示")):
             filters.append(StrategyCondition(indicator="st_flag", op="==", value=False))
         if _contains_any(text, _DRAWDOWN_TERMS):
@@ -251,6 +263,8 @@ class StrategyDraftBuilder:
         take_profit_pct = _extract_percent_after(text, ("止盈", "take profit", "take-profit"))
         if take_profit_pct is not None:
             take_profit = TakeProfitConfig(type="pct", value=take_profit_pct)
+        elif _contains_any(text, _BREAKOUT_TERMS):
+            take_profit = TakeProfitConfig(type="trailing", trigger_pct=0.08, trail_pct=0.04)
         else:
             take_profit = TakeProfitConfig(
                 type="rr",
@@ -286,11 +300,26 @@ class StrategyDraftBuilder:
             for condition in conditions:
                 target = f"entry.{bucket_name}[indicator={condition.indicator}].value"
                 spec = _TUNABLE_SPECS.get(condition.indicator)
-                if spec is None or target in seen_targets:
-                    continue
-                lo, hi, step, label = spec
-                tunables.append(TunableParam(target=target, range=(lo, hi), step=step, label=label))
-                seen_targets.add(target)
+                if spec is not None and target not in seen_targets:
+                    lo, hi, step, label = spec
+                    tunables.append(
+                        TunableParam(target=target, range=(lo, hi), step=step, label=label)
+                    )
+                    seen_targets.add(target)
+                period_spec = _PERIOD_TUNABLE_SPECS.get(_period_tunable_key(condition.indicator))
+                if period_spec is not None:
+                    period_target = f"entry.{bucket_name}[indicator={condition.indicator}].indicator"
+                    if period_target not in seen_targets:
+                        lo, hi, step, label = period_spec
+                        tunables.append(
+                            TunableParam(
+                                target=period_target,
+                                range=(lo, hi),
+                                step=step,
+                                label=label,
+                            )
+                        )
+                        seen_targets.add(period_target)
 
         if exit_rules.stop_loss.value is not None:
             tunables.append(
@@ -320,10 +349,30 @@ class StrategyDraftBuilder:
                         label="Reward/risk ratio",
                     )
                 )
+        if exit_rules.take_profit.type == "trailing":
+            tunables.extend(
+                [
+                    TunableParam(
+                        target="exit.take_profit.trigger_pct",
+                        range=(0.04, 0.14),
+                        step=0.01,
+                        label="Trailing profit trigger",
+                    ),
+                    TunableParam(
+                        target="exit.take_profit.trail_pct",
+                        range=(0.02, 0.08),
+                        step=0.01,
+                        label="Trailing giveback",
+                    ),
+                ]
+            )
         return tunables
 
 
 _BREAKOUT_TERMS = frozenset(("突破", "新高", "放量突破", "breakout", "52w", "high"))
+_COMPRESSION_TERMS = frozenset(
+    ("收缩", "缩量整理", "窄幅", "低波动", "平台", "compression", "squeeze", "range contraction")
+)
 _PULLBACK_TERMS = frozenset(("回踩", "回调", "pullback", "均线附近", "低吸"))
 _REVERSAL_TERMS = frozenset(("超跌", "反转", "reversal", "mean reversion", "oversold", "rsi"))
 _ROTATION_TERMS = frozenset(("板块", "轮动", "sector", "rotation", "行业"))
@@ -349,9 +398,19 @@ _TUNABLE_SPECS: dict[str, tuple[float, float, float, str]] = {
     "rsi_14": (20, 45, 1, "RSI threshold"),
     "deviation_from_ma20_pct": (-0.12, -0.02, 0.005, "MA20 deviation"),
     "volume_ratio_1d_5d": (0.80, 2.50, 0.10, "Volume ratio"),
+    "volume_ratio_1d_20d": (1.00, 2.80, 0.10, "20-day volume ratio"),
     "body_to_range_ratio": (0.25, 0.70, 0.05, "Candle body ratio"),
     "ma20_slope": (0.00, 0.03, 0.0025, "MA20 slope"),
     "close_to_ma10_pct": (0.005, 0.05, 0.005, "Close to MA10"),
+    "price_position_120d": (0.45, 0.90, 0.05, "120-day price position"),
+    "bollinger_band_width_20d": (0.06, 0.22, 0.01, "Bollinger width"),
+}
+
+_PERIOD_TUNABLE_SPECS: dict[str, tuple[float, float, float, str]] = {
+    "breakout_high_Nd": (10, 60, 5, "Breakout lookback"),
+    "price_position_Nd": (60, 250, 10, "Price-position lookback"),
+    "bollinger_band_width_Nd": (10, 40, 5, "Bollinger lookback"),
+    "volume_ratio_1d_Nd": (5, 40, 5, "Volume baseline window"),
 }
 
 
@@ -361,6 +420,18 @@ def _normalize_text(text: str) -> str:
 
 def _contains_any(text: str, terms: frozenset[str] | tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
+
+
+def _period_tunable_key(indicator: str) -> str:
+    if re.fullmatch(r"breakout_high_\d+d", indicator):
+        return "breakout_high_Nd"
+    if re.fullmatch(r"price_position_\d+d", indicator):
+        return "price_position_Nd"
+    if re.fullmatch(r"bollinger_band_width_\d+d(?:_std[0-9]+(?:p[0-9]+)?)?", indicator):
+        return "bollinger_band_width_Nd"
+    if re.fullmatch(r"volume_ratio_1d_\d+d", indicator):
+        return "volume_ratio_1d_Nd"
+    return indicator
 
 
 def _requests_short_strategy(text: str) -> bool:

@@ -193,6 +193,8 @@ class TestEvaluatorMetrics:
         m = self.evaluator.compute_metrics(signals)
         assert 0 < m.win_rate < 1
         assert m.signal_count == 5
+        assert m.avg_win_return == 0.04
+        assert m.avg_loss_return == -0.015
         assert m.profit_loss_ratio > 0
 
     def test_max_drawdown(self) -> None:

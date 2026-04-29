@@ -11,12 +11,14 @@ import pytest
 
 from alphaevo.cli.demo import (
     _build_synthetic_data,
+    _data_fingerprint,
     _DummyLLM,
     _fetch_real_data,
     _persist_demo_history,
     _record_demo_experience,
     _run_backtest,
     _select_best_demo_mutation,
+    load_showcase_snapshot,
 )
 from alphaevo.models.enums import ChangeType
 from alphaevo.models.execution import StrategyChange
@@ -165,3 +167,12 @@ def test_persist_demo_history_saves_strategies_and_evaluations(tmp_path):
     assert saved == 1
     assert store.get(strategy.meta.id) is not None
     assert len(store.get_evaluations(strategy.meta.id)) == 1
+
+
+def test_load_showcase_snapshot_uses_bundled_real_data() -> None:
+    data, manifest = load_showcase_snapshot()
+
+    assert {"AAPL", "MSFT", "NVDA", "AMD", "TSLA"}.issubset(data)
+    assert manifest["source_adapter"] == "yfinance"
+    assert _data_fingerprint(data)
+    assert all(len(df) >= 250 for df in data.values())

@@ -143,6 +143,8 @@ class Reporter:
             "|--------|-------|",
             f"| Win Rate | {o.win_rate:.1%} |",
             f"| Avg Return | {o.avg_return:.2%} |",
+            f"| Avg Win | {o.avg_win_return:.2%} |",
+            f"| Avg Loss | {o.avg_loss_return:.2%} |",
             f"| Median Return | {o.median_return:.2%} |",
             f"| P/L Ratio | {o.profit_loss_ratio:.2f} |",
             f"| Max Drawdown | {o.max_drawdown:.1%} |",

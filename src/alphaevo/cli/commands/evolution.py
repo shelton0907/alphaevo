@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 import typer
 from rich.console import Console
@@ -21,7 +22,15 @@ if TYPE_CHECKING:
     from alphaevo.models.execution import EvaluationReport
     from alphaevo.models.strategy import Strategy
 
-OptimizationObjective = Literal["confidence", "win_rate", "avg_return", "drawdown"]
+OptimizationObjective = Literal[
+    "confidence",
+    "win_rate",
+    "avg_return",
+    "drawdown",
+    "quality",
+    "profit_quality",
+    "robust_profit_quality",
+]
 OptimizationEvaluationMode = Literal["fast", "full"]
 
 logger = logging.getLogger(__name__)
@@ -378,7 +387,11 @@ def optimize_command(
     objective: str = typer.Option(
         "confidence",
         "--objective",
-        help="Ranking objective: confidence/win_rate/avg_return/drawdown",
+        help=(
+            "Ranking objective: "
+            "confidence/win_rate/avg_return/drawdown/quality/profit_quality/"
+            "robust_profit_quality"
+        ),
     ),
     min_win_rate: float | None = typer.Option(
         None,
@@ -389,6 +402,11 @@ def optimize_command(
         None,
         "--min-avg-return",
         help="Minimum average return gate, e.g. 0.0 to reject negative expectancy",
+    ),
+    min_total_return: float | None = typer.Option(
+        None,
+        "--min-total-return",
+        help="Minimum compounded total return gate, e.g. 0.10",
     ),
     min_profit_loss_ratio: float | None = typer.Option(
         None,
@@ -404,6 +422,31 @@ def optimize_command(
         None,
         "--min-signals",
         help="Minimum signal-count gate for qualified candidates",
+    ),
+    reject_overfit: bool = typer.Option(
+        False,
+        "--reject-overfit",
+        help="Reject candidates flagged by train/val/test or sensitivity overfit checks",
+    ),
+    max_train_val_gap: float | None = typer.Option(
+        None,
+        "--max-train-val-gap",
+        help="Maximum train-validation win-rate gap for full-evaluated candidates",
+    ),
+    max_val_test_gap: float | None = typer.Option(
+        None,
+        "--max-val-test-gap",
+        help="Maximum validation-test win-rate gap for full-evaluated candidates",
+    ),
+    max_walk_forward_gap: float | None = typer.Option(
+        None,
+        "--max-walk-forward-gap",
+        help="Maximum mean walk-forward train-test gap for full-evaluated candidates",
+    ),
+    min_walk_forward_pass_rate: float | None = typer.Option(
+        None,
+        "--min-walk-forward-pass-rate",
+        help="Minimum walk-forward fold pass rate for full-evaluated candidates",
     ),
     max_values_per_param: int = typer.Option(
         5,
@@ -424,6 +467,21 @@ def optimize_command(
         5,
         "--full-eval-top",
         help="With fast mode, fully re-evaluate the top N candidates",
+    ),
+    parallel_workers: int = typer.Option(
+        1,
+        "--parallel-workers",
+        help="Parallel candidate-evaluation workers for optimization search",
+    ),
+    joint_top: int = typer.Option(
+        0,
+        "--joint-top",
+        help="Refine top N parameter candidates with exit/risk search",
+    ),
+    joint_candidates_per_seed: int = typer.Option(
+        64,
+        "--joint-candidates-per-seed",
+        help="Maximum exit/risk candidates per parameter seed in joint search",
     ),
     save_best: bool = typer.Option(
         False,
@@ -473,9 +531,15 @@ def optimize_command(
         for value in (
             min_win_rate,
             min_avg_return,
+            min_total_return,
             min_profit_loss_ratio,
             max_drawdown,
             min_signals,
+            reject_overfit,
+            max_train_val_gap,
+            max_val_test_gap,
+            max_walk_forward_gap,
+            min_walk_forward_pass_rate,
         )
     )
 
@@ -492,6 +556,7 @@ def optimize_command(
 
     from alphaevo.optimizer import (
         ExitOptimizer,
+        JointOptimizer,
         ParamOptimizer,
         export_best_param_strategy,
         export_best_strategy,
@@ -533,6 +598,7 @@ def optimize_command(
             raise typer.Exit(1) from None
 
         exit_result = None
+        joint_result = None
         if run_exit_optimizer:
             progress.update(task, description="Searching exit/risk candidates...")
             exit_optimizer = ExitOptimizer(
@@ -555,9 +621,16 @@ def optimize_command(
                     full_eval_top_n=full_eval_top,
                     min_win_rate=min_win_rate,
                     min_avg_return=min_avg_return,
+                    min_total_return=min_total_return,
                     min_profit_loss_ratio=min_profit_loss_ratio,
                     max_drawdown=max_drawdown,
                     min_signals=min_signals,
+                    reject_overfit=reject_overfit,
+                    max_train_val_gap=max_train_val_gap,
+                    max_val_test_gap=max_val_test_gap,
+                    max_walk_forward_gap=max_walk_forward_gap,
+                    min_walk_forward_pass_rate=min_walk_forward_pass_rate,
+                    parallel_workers=parallel_workers,
                 )
             except ValueError as e:
                 console.print(f"[red]Exit optimization failed: {e}[/red]")
@@ -588,12 +661,66 @@ def optimize_command(
                     full_eval_top_n=full_eval_top,
                     min_win_rate=min_win_rate,
                     min_avg_return=min_avg_return,
+                    min_total_return=min_total_return,
                     min_profit_loss_ratio=min_profit_loss_ratio,
                     max_drawdown=max_drawdown,
                     min_signals=min_signals,
+                    reject_overfit=reject_overfit,
+                    max_train_val_gap=max_train_val_gap,
+                    max_val_test_gap=max_val_test_gap,
+                    max_walk_forward_gap=max_walk_forward_gap,
+                    min_walk_forward_pass_rate=min_walk_forward_pass_rate,
+                    parallel_workers=parallel_workers,
                 )
             except ValueError as e:
                 console.print(f"[red]Parameter optimization failed: {e}[/red]")
+                raise typer.Exit(1) from None
+
+        if joint_top > 0 and run_exit_optimizer and param_result is not None:
+            progress.update(task, description="Searching joint entry+exit candidates...")
+            seed_candidates = _select_joint_seed_candidates(
+                param_result.candidates,
+                limit=joint_top,
+                min_avg_return=min_avg_return,
+                min_total_return=min_total_return,
+                min_profit_loss_ratio=min_profit_loss_ratio,
+                min_signals=min_signals,
+            )
+            seed_strategies = [candidate.strategy for candidate in seed_candidates]
+            joint_optimizer = JointOptimizer(
+                slippage=config.backtest.slippage,
+                commission=config.backtest.commission,
+                min_data_days=config.backtest.min_data_days,
+                fill_policy=config.backtest.fill_policy,
+                backtest_config=config.backtest,
+            )
+            try:
+                joint_result = joint_optimizer.optimize(
+                    strategy_id,
+                    seed_strategies,
+                    baseline._data or {},
+                    baseline.batch,
+                    contexts=baseline._contexts,
+                    spaces=exit_spaces,
+                    max_candidates_per_seed=joint_candidates_per_seed,
+                    objective=objective_value,
+                    evaluation_mode=evaluation_mode_value,
+                    full_eval_top_n=full_eval_top,
+                    min_win_rate=min_win_rate,
+                    min_avg_return=min_avg_return,
+                    min_total_return=min_total_return,
+                    min_profit_loss_ratio=min_profit_loss_ratio,
+                    max_drawdown=max_drawdown,
+                    min_signals=min_signals,
+                    reject_overfit=reject_overfit,
+                    max_train_val_gap=max_train_val_gap,
+                    max_val_test_gap=max_val_test_gap,
+                    max_walk_forward_gap=max_walk_forward_gap,
+                    min_walk_forward_pass_rate=min_walk_forward_pass_rate,
+                    parallel_workers=parallel_workers,
+                )
+            except ValueError as e:
+                console.print(f"[red]Joint optimization failed: {e}[/red]")
                 raise typer.Exit(1) from None
 
     if exit_result is not None:
@@ -603,6 +730,9 @@ def optimize_command(
         table.add_column("Confidence", justify="right")
         table.add_column("Win Rate", justify="right")
         table.add_column("Avg Return", justify="right")
+        table.add_column("Avg Win", justify="right")
+        table.add_column("Avg Loss", justify="right")
+        table.add_column("Total Return", justify="right")
         table.add_column("P/L", justify="right")
         table.add_column("Max DD", justify="right")
         table.add_column("Signals", justify="right")
@@ -617,6 +747,9 @@ def optimize_command(
                 f"{exit_candidate.evaluation.confidence_score:.1%}",
                 f"{ev.win_rate:.1%}",
                 f"{ev.avg_return:.2%}",
+                f"{ev.avg_win_return:.2%}",
+                f"{ev.avg_loss_return:.2%}",
+                f"{ev.total_return:.2%}",
                 f"{ev.profit_loss_ratio:.2f}",
                 f"{ev.max_drawdown:.1%}",
                 str(ev.signal_count),
@@ -637,6 +770,9 @@ def optimize_command(
         table.add_column("Confidence", justify="right")
         table.add_column("Win Rate", justify="right")
         table.add_column("Avg Return", justify="right")
+        table.add_column("Avg Win", justify="right")
+        table.add_column("Avg Loss", justify="right")
+        table.add_column("Total Return", justify="right")
         table.add_column("P/L", justify="right")
         table.add_column("Max DD", justify="right")
         table.add_column("Signals", justify="right")
@@ -651,6 +787,9 @@ def optimize_command(
                 f"{param_candidate.evaluation.confidence_score:.1%}",
                 f"{ev.win_rate:.1%}",
                 f"{ev.avg_return:.2%}",
+                f"{ev.avg_win_return:.2%}",
+                f"{ev.avg_loss_return:.2%}",
+                f"{ev.total_return:.2%}",
                 f"{ev.profit_loss_ratio:.2f}",
                 f"{ev.max_drawdown:.1%}",
                 str(ev.signal_count),
@@ -662,6 +801,46 @@ def optimize_command(
         if gates_configured and param_result.qualified_count == 0:
             console.print(
                 "[yellow]No tunable-parameter candidate passed the configured quality gates.[/yellow]"
+            )
+
+    if joint_result is not None:
+        table = Table(title=f"🔁 Joint Entry+Exit Optimization: {strategy_id}")
+        table.add_column("Rank", justify="right")
+        table.add_column("Candidate", style="cyan")
+        table.add_column("Confidence", justify="right")
+        table.add_column("Win Rate", justify="right")
+        table.add_column("Avg Return", justify="right")
+        table.add_column("Avg Win", justify="right")
+        table.add_column("Avg Loss", justify="right")
+        table.add_column("Total Return", justify="right")
+        table.add_column("P/L", justify="right")
+        table.add_column("Max DD", justify="right")
+        table.add_column("Signals", justify="right")
+        table.add_column("Gate", justify="center")
+        table.add_column("Eval", justify="center")
+        table.add_column("Changes")
+        for idx, joint_candidate in enumerate(joint_result.candidates[:10], start=1):
+            ev = joint_candidate.evaluation.overall
+            table.add_row(
+                str(idx),
+                joint_candidate.candidate_id,
+                f"{joint_candidate.evaluation.confidence_score:.1%}",
+                f"{ev.win_rate:.1%}",
+                f"{ev.avg_return:.2%}",
+                f"{ev.avg_win_return:.2%}",
+                f"{ev.avg_loss_return:.2%}",
+                f"{ev.total_return:.2%}",
+                f"{ev.profit_loss_ratio:.2f}",
+                f"{ev.max_drawdown:.1%}",
+                str(ev.signal_count),
+                "PASS" if joint_candidate.passed_gate else "FAIL",
+                joint_candidate.evaluation_mode,
+                "; ".join(joint_candidate.changes),
+            )
+        console.print(table)
+        if gates_configured and joint_result.qualified_count == 0:
+            console.print(
+                "[yellow]No joint entry+exit candidate passed the configured quality gates.[/yellow]"
             )
 
     out_path = Path(report_dir)
@@ -684,11 +863,21 @@ def optimize_command(
         if best_path is not None:
             console.print(f"[green]✓[/green] Best parameter strategy YAML: {best_path}")
 
+    if joint_result is not None:
+        report_path = out_path / f"{strategy_id}_joint_optimization.md"
+        report_path.write_text(render_exit_optimization_report(joint_result), encoding="utf-8")
+        console.print(f"[green]✓[/green] Joint report saved to {report_path}")
+
+        best_path = export_best_strategy(joint_result, out_path)
+        if best_path is not None:
+            console.print(f"[green]✓[/green] Best joint strategy YAML: {best_path}")
+
     best_candidates = [
         candidate
         for candidate in (
             exit_result.best_candidate if exit_result is not None else None,
             param_result.best_candidate if param_result is not None else None,
+            joint_result.best_candidate if joint_result is not None else None,
         )
         if candidate is not None
     ]
@@ -700,27 +889,58 @@ def optimize_command(
         if best_candidates
         else None
     )
+    all_candidates = [
+        candidate
+        for result in (exit_result, param_result, joint_result)
+        if result is not None
+        for candidate in result.candidates
+    ]
+    from alphaevo.optimizer.summary import select_high_win_return_candidate
+
+    showcase = select_high_win_return_candidate(all_candidates)
+    if best is not None:
+        _print_best_optimization_candidate(best, title="Best Ranked Strategy Candidate")
+    if showcase is not None and (best is None or showcase.candidate_id != best.candidate_id):
+        _print_best_optimization_candidate(
+            showcase,
+            title="Best High-Win/High-Return Candidate",
+        )
     if save_best and best is not None and best.passed_gate:
         pipeline.store.save(best.strategy)
         console.print(f"[green]✓[/green] Saved best strategy: {best.candidate_id}")
-    elif save_best and best is not None:
-        console.print("[yellow]No qualified candidate passed the configured gates; nothing saved.[/yellow]")
+    elif best is not None:
+        if save_best:
+            console.print(
+                "[yellow]No qualified candidate passed the configured gates; nothing saved.[/yellow]"
+            )
+
+
+def _print_best_optimization_candidate(candidate: Any, *, title: str) -> None:
+    from alphaevo.optimizer.summary import format_best_candidate_console
+
+    border_style = "green" if candidate.passed_gate else "yellow"
+    if not candidate.passed_gate:
+        title += " (failed gates)"
+    console.print(
+        Panel(
+            format_best_candidate_console(candidate),
+            title=title,
+            border_style=border_style,
+        )
+    )
 
 
 def _optimization_candidate_sort_key(
     candidate: _OptimizationCandidateLike,
     objective: OptimizationObjective,
-) -> tuple[float, float, float, float, float, int, float]:
+) -> tuple[float, float, float, float, float, float, float, float, float, int, float]:
+    from alphaevo.optimizer.scoring import candidate_sort_key
+
     evaluation = candidate.evaluation
-    ev = evaluation.overall
-    return (
-        1.0 if candidate.passed_gate else 0.0,
-        _optimization_objective_value(candidate, objective),
-        evaluation.confidence_score,
-        ev.avg_return,
-        ev.profit_loss_ratio,
-        ev.signal_count,
-        -ev.max_drawdown,
+    return candidate_sort_key(
+        evaluation,
+        passed_gate=candidate.passed_gate,
+        objective=objective,
     )
 
 
@@ -728,14 +948,72 @@ def _optimization_objective_value(
     candidate: _OptimizationCandidateLike,
     objective: OptimizationObjective,
 ) -> float:
-    ev = candidate.evaluation.overall
-    if objective == "win_rate":
-        return ev.win_rate
-    if objective == "avg_return":
-        return ev.avg_return
-    if objective == "drawdown":
-        return -ev.max_drawdown
-    return candidate.evaluation.confidence_score
+    from alphaevo.optimizer.scoring import objective_value
+
+    return objective_value(candidate.evaluation, objective)
+
+
+def _select_joint_seed_candidates(
+    candidates: Sequence[_OptimizationCandidateLike],
+    *,
+    limit: int,
+    min_avg_return: float | None,
+    min_total_return: float | None,
+    min_profit_loss_ratio: float | None,
+    min_signals: int | None,
+) -> list[_OptimizationCandidateLike]:
+    """Pick diverse parameter seeds for the joint entry+exit pass."""
+    if limit <= 0:
+        return []
+    selected: list[_OptimizationCandidateLike] = []
+    seen: set[str] = set()
+
+    def eligible(candidate: _OptimizationCandidateLike) -> bool:
+        ev = candidate.evaluation.overall
+        if min_signals is not None and ev.signal_count < min_signals:
+            return False
+        if min_avg_return is not None and ev.avg_return < min_avg_return * 0.5:
+            return False
+        if min_total_return is not None and ev.total_return < min_total_return * 0.5:
+            return False
+        return not (
+            min_profit_loss_ratio is not None
+            and ev.profit_loss_ratio < max(0.8, min_profit_loss_ratio * 0.8)
+        )
+
+    def add(candidate: _OptimizationCandidateLike) -> None:
+        if len(selected) >= limit or candidate.candidate_id in seen:
+            return
+        if not eligible(candidate):
+            return
+        selected.append(candidate)
+        seen.add(candidate.candidate_id)
+
+    ranked = list(candidates)
+    for candidate in ranked[:1]:
+        add(candidate)
+    for key in (
+        lambda candidate: candidate.evaluation.overall.win_rate,
+        lambda candidate: candidate.evaluation.overall.avg_return,
+        lambda candidate: candidate.evaluation.overall.total_return,
+        lambda candidate: candidate.evaluation.overall.profit_loss_ratio,
+    ):
+        for candidate in sorted(ranked, key=key, reverse=True):
+            before = len(selected)
+            add(candidate)
+            if len(selected) > before:
+                break
+    for candidate in ranked:
+        add(candidate)
+        if len(selected) >= limit:
+            break
+    if not selected:
+        for candidate in ranked[:limit]:
+            if candidate.candidate_id in seen:
+                continue
+            selected.append(candidate)
+            seen.add(candidate.candidate_id)
+    return selected
 
 
 def evolve_command(

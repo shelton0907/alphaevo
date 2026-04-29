@@ -34,6 +34,9 @@ docs/internal/
 docs/OPTIMIZATION_ROADMAP.md
 docs/demo.cast
 reports/
+!docs/reports/
+docs/reports/*
+!docs/reports/showcase_*.md
 results/
 
 # Research papers (private, not for public distribution)

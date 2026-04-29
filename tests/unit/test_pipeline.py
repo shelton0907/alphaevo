@@ -220,6 +220,8 @@ class TestRunPipeline:
         assert RunPipeline._indicator_lookback("bollinger_band_width_30d_std1p5") == 30
         assert RunPipeline._indicator_lookback("price_above_bollinger_upper_30d") == 30
         assert RunPipeline._indicator_lookback("price_above_bollinger_upper_30d_std2p5") == 30
+        assert RunPipeline._indicator_lookback("breakout_high_20d") == 21
+        assert RunPipeline._indicator_lookback("price_position_120d") == 120
         assert RunPipeline._indicator_lookback("volume_ratio_1d_10d") == 11
         assert RunPipeline._indicator_lookback("volatility_30d") == 31
         assert RunPipeline._indicator_lookback("relative_strength_30d") == 31

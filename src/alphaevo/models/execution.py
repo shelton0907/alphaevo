@@ -92,6 +92,8 @@ class OverallMetrics(BaseModel):
 
     win_rate: float = 0.0
     avg_return: float = 0.0
+    avg_win_return: float = 0.0
+    avg_loss_return: float = 0.0
     profit_loss_ratio: float = 0.0
     max_drawdown: float = 0.0
     sharpe_ratio: float = 0.0

@@ -50,9 +50,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--max-drawdown`, `--min-signals`, and `--param-max-changes` so candidates
   can be judged against explicit qualification thresholds such as 50%+ win rate
   without negative expectancy or weak payoff quality.
+- **Balanced Quality Objective**: `alphaevo optimize --objective quality`
+  ranks candidates by a blended score across win rate, average return,
+  profit/loss ratio, drawdown, and signal count.
+- **Return-Focused Objective**: `alphaevo optimize --objective profit_quality`
+  ranks candidates by average return, total return, payoff ratio, win rate,
+  and drawdown for cases where positive but thin returns are not enough.
+- **Robust Return Objective**: `alphaevo optimize --objective robust_profit_quality`
+  blends return quality with anti-overfit and walk-forward stability scores.
+- **Total Return Gate**: `alphaevo optimize` supports `--min-total-return`
+  and optimization reports now show total return alongside average return.
 - **Fast Optimization Evaluation**: candidate search now supports
   `--evaluation-mode fast` plus `--full-eval-top` so large grids can screen on
   trade metrics first and fully re-evaluate only the leading candidates.
+- **Parallel Optimization Search**: `alphaevo optimize --parallel-workers`
+  evaluates parameter and exit/risk candidates concurrently for larger
+  return-quality and joint-search runs.
+- **Robust Optimization Gates**: `alphaevo optimize` can reject candidates
+  flagged by anti-overfit checks or by train/validation/test and walk-forward
+  performance gaps via `--reject-overfit`, `--max-train-val-gap`,
+  `--max-val-test-gap`, `--max-walk-forward-gap`, and
+  `--min-walk-forward-pass-rate`.
+- **Best Strategy Candidate Summary**: optimization output and reports now show
+  the best high-win/high-return candidate as a readable strategy summary,
+  including metrics, rule changes, entry/exit rules, and any gate-failure
+  reasons.
+- **Joint Entry+Exit Search**: `alphaevo optimize --joint-top` now refines the
+  leading entry/parameter candidates with exit/risk optimization so buy-side
+  filters and sell-side rules can be evaluated together. Joint seeds are
+  diversified across win rate, return, total return, and payoff ratio.
+- **Trailing Take-Profit Search**: exit optimization now tests trailing
+  take-profit candidates alongside fixed reward/risk targets.
+- **Breakout/Compression Strategy Template**: Added `breakout_high_Nd` and
+  `price_position_Nd` OHLCV indicators plus the
+  `volatility_compression_breakout_v1` built-in strategy with explicit breakout
+  triggers, volatility-compression guards, and trailing profit capture.
+- **Breakout-Aware Strategy Drafting**: `alphaevo strategy draft` now maps
+  plain-language breakout/new-high ideas to executable breakout triggers,
+  range-position guards, and trailing take-profit rules.
 - **Exit Diagnostics**: Optimization reports now summarize MFE/MAE, giveback,
   potentially early exits, late exits, effective stops, and truncated take profits.
 - **Backtest Fill Policy**: Added configurable same-candle stop-loss/take-profit

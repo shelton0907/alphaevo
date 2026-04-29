@@ -70,6 +70,8 @@ _INDICATOR_LOOKBACKS: dict[str, int] = {
     "days_since_low_20d": 20,
     "rsi_14_zscore": 50,
     "volume_ratio_1d_20d": 21,
+    "breakout_high_20d": 21,
+    "price_position_120d": 120,
     "price_position_52w": 250,
     "volatility_20d": 21,
     "gap_up_pct": 2,
@@ -592,6 +594,10 @@ class RunPipeline:
             return int(match.group(1))
         if match := re.fullmatch(r"volume_ratio_1d_(\d+)d", indicator):
             return int(match.group(1)) + 1
+        if match := re.fullmatch(r"breakout_high_(\d+)d", indicator):
+            return int(match.group(1)) + 1
+        if match := re.fullmatch(r"price_position_(\d+)d", indicator):
+            return int(match.group(1))
         if match := re.fullmatch(r"momentum_(\d+)d", indicator):
             return int(match.group(1)) + 1
         if match := re.fullmatch(r"avg_volume_(\d+)d", indicator):

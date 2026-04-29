@@ -52,9 +52,10 @@ take-profit, and holding rules without invoking an LLM.
 ```bash
 alphaevo optimize trend_pullback_rebound_v1 \
     --spaces entry,params,indicator,exit,stoploss,takeprofit,holding \
-    --objective win_rate \
+    --objective robust_profit_quality \
     --min-win-rate 0.5 \
     --min-avg-return 0 \
+    --min-total-return 0.10 \
     --min-profit-loss-ratio 1.0 \
     --max-drawdown 0.35 \
     --min-signals 30 \
@@ -62,6 +63,13 @@ alphaevo optimize trend_pullback_rebound_v1 \
     --max-values-per-param 8 \
     --evaluation-mode fast \
     --full-eval-top 5 \
+    --reject-overfit \
+    --max-train-val-gap 0.12 \
+    --max-val-test-gap 0.10 \
+    --max-walk-forward-gap 0.12 \
+    --min-walk-forward-pass-rate 0.5 \
+    --joint-top 3 \
+    --joint-candidates-per-seed 64 \
     --samples 80 \
     --adapter akshare \
     --fill-policy conservative \
@@ -73,21 +81,33 @@ What it does:
 - runs one baseline sampling/data-fetch pass
 - reuses the same historical data for all candidates
 - searches executable `params.tunable` entry thresholds and indicator windows
-- can rank by `confidence`, `win_rate`, `avg_return`, or lower `drawdown`
+- can rank by `confidence`, `win_rate`, `avg_return`, lower `drawdown`, balanced `quality`,
+  return-focused `profit_quality`, or stability-aware `robust_profit_quality`
 - can apply hard qualification gates such as
-  `--min-win-rate 0.5 --min-avg-return 0 --min-profit-loss-ratio 1.0 --max-drawdown 0.35 --min-signals 30`
+  `--min-win-rate 0.5 --min-avg-return 0 --min-total-return 0.10 --min-profit-loss-ratio 1.0 --max-drawdown 0.35 --min-signals 30`
 - can test parameter combinations with `--param-max-changes 2`
+- can refine the top parameter/entry candidates with exit/risk search via
+  `--joint-top` and `--joint-candidates-per-seed`; the seed set is diversified
+  across win rate, average return, total return, and payoff ratio
 - can widen the per-parameter value grid with `--max-values-per-param`
 - defaults to fast candidate evaluation and can fully re-evaluate the top candidates
   with `--full-eval-top`
+- can reject overfit-looking candidates with full-evaluation gates such as
+  `--reject-overfit`, `--max-train-val-gap`, `--max-val-test-gap`,
+  `--max-walk-forward-gap`, and `--min-walk-forward-pass-rate`; in fast mode
+  these gates apply to candidates covered by `--full-eval-top`
+- prints and writes a dedicated best-strategy summary with the candidate ID,
+  win rate, average/total return, P/L ratio, drawdown, signal count, rule
+  changes, entry/exit rules, and any gate-failure reasons
 - does not export or save a best-candidate YAML when qualification gates are configured
   and no candidate passes them
-- searches explicit `exit.triggers`, stop loss, reward/risk take profit, and max holding days
+- searches explicit `exit.triggers`, stop loss, reward/risk or trailing take profit,
+  and max holding days
 - ranks candidates by confidence score, signal count, average return, and lower drawdown
 - diagnoses exit quality with MFE/MAE, giveback, potentially sold-early trades,
   late exits, effective stops, and take-profit truncation
 - writes `<strategy_id>_param_optimization.md`, `<strategy_id>_exit_optimization.md`,
-  and best-candidate YAML files
+  optional `<strategy_id>_joint_optimization.md`, and best-candidate YAML files
 
 This is intentionally narrower than `evolve`: it is for disciplined exit/risk
 and parameter research, not broad strategy rewriting.

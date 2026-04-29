@@ -6,7 +6,7 @@
 
 **An Open-Source Self-Evolving Stock Strategy Research Agent**
 
-*Backtest stock strategies and improve them with LLM-guided iterations*
+*Watch strategies get diagnosed, mutated, re-tested, and pruned like research assets*
 
 [![GitHub stars](https://img.shields.io/github/stars/ZhuLinsen/alphaevo?style=social)](https://github.com/ZhuLinsen/alphaevo/stargazers)
 [![CI](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuLinsen/alphaevo/actions/workflows/ci.yml)
@@ -25,66 +25,91 @@
 
 ## ✨ Overview
 
-AlphaEvo backtests stock strategies on historical market data and iteratively improves them with LLM-guided reflection. It combines executable YAML DSL, anti-overfitting evaluation, research logs, and evolution trees into a single research workflow.
+AlphaEvo is a self-evolving stock strategy research agent. It turns a readable YAML strategy into a research loop: backtest, diagnose failure, propose a controlled mutation, re-test the new version, and keep the full evidence trail.
+
+### Real-data showcase
+
+Bundled frozen yfinance snapshot, US tech basket, 2025-02-11 to 2026-04-10:
+
+| Strategy | Signals | Win Rate | Avg Return | Max DD | Score |
+|----------|---------|----------|------------|--------|-------|
+| `rsi_reversion_v1` baseline | 0 | 0.0% | 0.00% | 0.0% | 8.1% |
+| `rsi_reversion_v4` champion | 57 | 47.4% | 1.50% | 36.8% | 37.7% |
+
+What happened: the deterministic research committee flagged an over-confirmed entry stack, tested `entry.logic: and -> or`, widened the stop, then extended holding days. Each change was accepted only after retest. See the generated report: [showcase_rsi_reversion_real_snapshot.md](docs/reports/showcase_rsi_reversion_real_snapshot.md).
 
 ## 🧠 Core Capabilities
 
 - **Backtesting and evaluation**: run strategies on real data with sampling, multi-metric scoring, and anti-overfitting checks.
 - **LLM-guided strategy evolution**: diagnose failure modes, propose targeted mutations, and re-test whether the new version is actually better.
+- **Deterministic research committee**: technical, risk, overfit, data-quality, and mutation-planning verdicts without requiring an API key.
 - **Traceable research workflow**: keep reports, LLM evidence, evolution trees, and trajectory exports for every iteration.
 
 ## 🚀 Quick Start
 
-### Try it in 30 seconds from source (no API key needed!)
+### Try the real-data showcase in 30 seconds (no API key needed)
 
 ```bash
 git clone https://github.com/ZhuLinsen/alphaevo.git
 cd alphaevo
 pip install -e .
-alphaevo demo
+alphaevo showcase
 ```
 
 <p align="center">
   <img src="docs/demo.gif" alt="AlphaEvo Demo" width="720">
 </p>
 
-This runs a complete self-evolution loop with synthetic data:
+This runs a real historical-data showcase from a bundled yfinance snapshot:
 
 ```
-🔬 Evolution: 4 rounds of self-improvement
+Showcase Chain: baseline + up to 3 validated mutations
 
-Round 1 │ v1 │ Win: 100%  Signals: 7   │ Score: 39.2%
-  🔓 Lower volume threshold to capture more trades
-  🔓 Lower relative strength threshold
-Round 2 │ v2 │ Win: 86%   Signals: 21  │ Score: 44.0%  ↑ +4.8%
-Round 3 │ v3 │ Win: 85%   Signals: 27  │ Score: 56.1%  ↑ +12.2%  🏆
-Round 4 │ v4 │ Win: 85%   Signals: 27  │ Score: 55.2%  ↓ -1.0%
+Round 1 │ rsi_reversion_v1 │ Signals: 0  │ Score: 8.1%
+  Committee: entry stack is too strict
+  Mutation: entry.logic and -> or
 
-📈 Strategy improved from 39.2% → 56.1% (+16.9%)
+Round 2 │ rsi_reversion_v2 │ Signals: 79 │ Score: 17.8%
+  Mutation: exit.stop_loss.value 0.05 -> 0.08
+
+Round 4 │ rsi_reversion_v4 │ Signals: 57 │ Score: 37.7% 🏆
 ```
 
 ### Choose the right path
 
 | Goal | Command | Data | LLM |
 |------|---------|------|-----|
-| Fast first-run demo | `alphaevo demo` | Synthetic | No |
+| Real-data showcase | `alphaevo showcase` | Bundled yfinance snapshot | No |
+| Quick first-run demo | `alphaevo demo` | Bundled yfinance snapshot | No |
+| Synthetic dev smoke test | `alphaevo demo --synthetic` | Synthetic | No |
 | Turn a plain-language idea into executable YAML | `alphaevo strategy draft "<idea>" --save` | None | No |
 | Draft, backtest, and optimize a plain-language idea | `alphaevo strategy research "<idea>"` | Real data | No |
 | Revise an existing strategy and validate it | `alphaevo strategy improve <id> "<change request>"` | Real data | No |
-| Real market data smoke test | `alphaevo demo --real` | Live yfinance / akshare | No |
+| Live market data smoke test | `alphaevo showcase --live` or `alphaevo demo --real` | Live yfinance / akshare | No |
 | Fuller real-data backtest | `alphaevo run ma_crossover_v1` | Live yfinance | No |
+| Test a breakout/volatility-compression template | `alphaevo run volatility_compression_breakout_v1` | Live yfinance | No |
 | Optimize entry thresholds and exit/risk rules | `alphaevo optimize <id> --spaces entry,params,indicator,exit,stoploss,takeprofit,holding` | Real data | No |
-| Require a quality-gated 50%+ win rate | `alphaevo optimize <id> --objective win_rate --min-win-rate 0.5 --min-avg-return 0 --min-profit-loss-ratio 1.0 --max-drawdown 0.35 --min-signals 30 --param-max-changes 2 --max-values-per-param 8 --evaluation-mode fast --full-eval-top 5` | Real data | No |
+| Balance win rate and payoff quality | `alphaevo optimize <id> --objective quality --min-win-rate 0.5 --min-avg-return 0 --min-profit-loss-ratio 1.0 --max-drawdown 0.35 --min-signals 30 --param-max-changes 2 --max-values-per-param 8 --evaluation-mode fast --full-eval-top 5` | Real data | No |
+| Push for higher return quality | `alphaevo optimize <id> --objective profit_quality --min-win-rate 0.5 --min-avg-return 0.006 --min-total-return 0.18 --min-profit-loss-ratio 1.1 --joint-top 4 --parallel-workers 4` | Real data | No |
+| Reject overfit-looking candidates | `alphaevo optimize <id> --objective robust_profit_quality --evaluation-mode fast --full-eval-top 8 --reject-overfit --max-train-val-gap 0.12 --max-val-test-gap 0.10 --max-walk-forward-gap 0.12 --min-walk-forward-pass-rate 0.5` | Real data | No |
+| Jointly refine entry and exits | `alphaevo optimize <id> --spaces all --objective quality --joint-top 3 --joint-candidates-per-seed 64` | Real data | No |
 | Flagship research-agent path | `alphaevo evolve <id> --method llm --output reports/` | Real data | Yes |
 
 Real-data commands need a data adapter extra: install `pip install -e ".[data-yfinance]"` for the default US workflow, `pip install -e ".[data-akshare]"` for A-share, or `pip install -e ".[data-full]"` for both.
 
-`alphaevo demo --real` is the quickest real-data smoke test: it uses live market data, prints the per-round hypothesis diagnosis, and may stop early when real evidence does not support another mutation. If you want a stronger first backtest with more signals on the default `yfinance` adapter, start with `alphaevo run ma_crossover_v1`.
+`alphaevo showcase` is the stable real-data first run: it uses the bundled yfinance snapshot and writes a shareable report. `alphaevo showcase --live` tries live yfinance first and falls back to the snapshot if the provider is unavailable. If you want a stronger first backtest with more symbols on the default `yfinance` adapter, start with `alphaevo run ma_crossover_v1`.
+
+`--objective robust_profit_quality` ranks return quality with an additional
+stability score. Robust optimization gates such as `--reject-overfit`,
+`--max-train-val-gap`, and `--max-walk-forward-gap` require full candidate
+metrics. In fast searches, keep `--full-eval-top` high enough for the leading
+candidates you want to judge.
 
 ### Current release scope
 
 - **Flagship LLM proof path**: `rsi_reversion_v1` and `ma_crossover_v1` on real data.
 - **Most reliable strategy families right now**: trend + reversal strategies whose core signals come from OHLCV / benchmark context.
+- **Return-oriented trend template**: `volatility_compression_breakout_v1` uses explicit prior-high breakout triggers, range-position guards, volatility-compression filters, and trailing take profit.
 - **Experimental families**: event + rotation strategies still rely partly on proxy context for news / sector-flow semantics, so treat them as research previews rather than the main launch proof.
 
 ### Full setup (with LLM evolution)

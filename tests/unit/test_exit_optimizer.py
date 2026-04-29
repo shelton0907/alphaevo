@@ -16,7 +16,9 @@ from alphaevo.models.strategy import (
     StrategyEntry,
     StrategyExit,
     StrategyMeta,
+    StrategyParams,
     TakeProfitConfig,
+    TunableParam,
 )
 from alphaevo.optimizer import (
     ExitOptimizer,
@@ -24,6 +26,7 @@ from alphaevo.optimizer import (
     export_best_strategy,
     render_exit_optimization_report,
 )
+from alphaevo.strategy.dsl.parser import StrategyParser
 
 
 def _make_ohlcv(n: int = 80) -> pd.DataFrame:
@@ -93,6 +96,28 @@ def test_exit_optimizer_generates_ranked_candidates() -> None:
     assert result.candidates[0].diagnostics.total_trades >= 0
 
 
+def test_exit_optimizer_parallel_workers_preserve_results() -> None:
+    strategy = _make_strategy()
+    batch = SampleBatch(
+        batch_id="batch",
+        strategy_id=strategy.meta.id,
+        symbols=["TEST"],
+        date_range=(date(2025, 1, 1), date(2025, 3, 31)),
+    )
+
+    result = ExitOptimizer(slippage=0.0, commission=0.0, min_data_days=15).optimize(
+        strategy,
+        {"TEST": _make_ohlcv()},
+        batch,
+        spaces=["holding"],
+        max_candidates=8,
+        parallel_workers=2,
+    )
+
+    assert result.best_candidate is not None
+    assert len(result.candidates) > 1
+
+
 def test_exit_optimizer_report_mentions_best_candidate() -> None:
     strategy = _make_strategy()
     batch = SampleBatch(
@@ -112,6 +137,8 @@ def test_exit_optimizer_report_mentions_best_candidate() -> None:
     report = render_exit_optimization_report(result)
 
     assert "# Exit Optimization Report" in report
+    assert "## Best Strategy Candidate" in report
+    assert "### Strategy Rules" in report
     assert "Best Candidate Exit Diagnostics" in report
     assert result.best_candidate_id is not None
     assert result.best_candidate_id in report
@@ -149,6 +176,77 @@ def test_exit_optimizer_applies_win_rate_objective_and_gate() -> None:
     assert all(candidate.gate_reasons or candidate.passed_gate for candidate in result.candidates)
 
 
+def test_exit_optimizer_generates_trailing_take_profit_candidates() -> None:
+    strategy = _make_strategy()
+    batch = SampleBatch(
+        batch_id="batch",
+        strategy_id=strategy.meta.id,
+        symbols=["TEST"],
+        date_range=(date(2025, 1, 1), date(2025, 3, 31)),
+    )
+    result = ExitOptimizer(slippage=0.0, commission=0.0, min_data_days=15).optimize(
+        strategy,
+        {"TEST": _make_ohlcv()},
+        batch,
+        spaces=["takeprofit"],
+        max_candidates=20,
+    )
+
+    assert any(
+        candidate.strategy.exit.take_profit.type == "trailing"
+        for candidate in result.candidates
+    )
+    assert any(
+        "take_profit_trailing=" in change
+        for candidate in result.candidates
+        for change in candidate.changes
+    )
+    assert any(
+        "Optimization notes (exit optimization):" in candidate.strategy.description
+        for candidate in result.candidates
+        if candidate.strategy.exit.take_profit.type == "trailing"
+    )
+
+
+def test_exit_optimizer_prunes_incompatible_take_profit_tunables() -> None:
+    strategy = _make_strategy()
+    strategy.exit.take_profit = TakeProfitConfig(type="trailing", trigger_pct=0.08, trail_pct=0.04)
+    strategy.params = StrategyParams(
+        tunable=[
+            TunableParam(
+                target="exit.take_profit.trigger_pct",
+                range=(0.04, 0.14),
+                step=0.01,
+            ),
+            TunableParam(
+                target="exit.take_profit.trail_pct",
+                range=(0.02, 0.08),
+                step=0.01,
+            ),
+        ]
+    )
+    batch = SampleBatch(
+        batch_id="batch",
+        strategy_id=strategy.meta.id,
+        symbols=["TEST"],
+        date_range=(date(2025, 1, 1), date(2025, 3, 31)),
+    )
+
+    result = ExitOptimizer(slippage=0.0, commission=0.0, min_data_days=15).optimize(
+        strategy,
+        {"TEST": _make_ohlcv()},
+        batch,
+        spaces=["takeprofit"],
+        max_candidates=10,
+    )
+    rr_candidate = next(c for c in result.candidates if c.strategy.exit.take_profit.type == "rr")
+    targets = {param.target for param in rr_candidate.strategy.params.tunable}
+
+    assert "exit.take_profit.trigger_pct" not in targets
+    assert "exit.take_profit.trail_pct" not in targets
+    assert StrategyParser().diagnose(rr_candidate.strategy).errors == []
+
+
 def test_exit_optimizer_can_full_evaluate_top_fast_candidates() -> None:
     strategy = _make_strategy()
     batch = SampleBatch(
@@ -169,6 +267,40 @@ def test_exit_optimizer_can_full_evaluate_top_fast_candidates() -> None:
 
     assert result.full_eval_top_n == 2
     assert sum(candidate.evaluation_mode == "full" for candidate in result.candidates) == 2
+
+
+def test_exit_optimizer_robust_gates_require_full_evaluation() -> None:
+    strategy = _make_strategy()
+    batch = SampleBatch(
+        batch_id="batch",
+        strategy_id=strategy.meta.id,
+        symbols=["TEST"],
+        date_range=(date(2025, 1, 1), date(2025, 3, 31)),
+    )
+    result = ExitOptimizer(slippage=0.0, commission=0.0, min_data_days=15).optimize(
+        strategy,
+        {"TEST": _make_ohlcv()},
+        batch,
+        spaces=["holding"],
+        max_candidates=6,
+        evaluation_mode="fast",
+        full_eval_top_n=2,
+        max_train_val_gap=1.0,
+    )
+
+    full_candidates = [candidate for candidate in result.candidates if candidate.evaluation_mode == "full"]
+    fast_candidates = [candidate for candidate in result.candidates if candidate.evaluation_mode == "fast"]
+
+    assert len(full_candidates) == 2
+    assert fast_candidates
+    assert all(
+        "full_eval_required_for_robust_gates" in candidate.gate_reasons
+        for candidate in fast_candidates
+    )
+    assert all(
+        "full_eval_required_for_robust_gates" not in candidate.gate_reasons
+        for candidate in full_candidates
+    )
 
 
 def test_exit_optimizer_does_not_export_failed_gate_candidate(tmp_path: Path) -> None:

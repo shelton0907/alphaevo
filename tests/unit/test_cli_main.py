@@ -141,6 +141,24 @@ class TestRunCommand:
         assert "--start date must be before --end date" in result.stdout
 
 
+class TestShowcaseCommand:
+    def test_showcase_delegates_to_runner(self) -> None:
+        with patch("alphaevo.cli.demo.run_showcase") as mock_run_showcase:
+            result = runner.invoke(app, ["showcase", "--output", "tmp_showcase", "--write-docs"])
+
+        assert result.exit_code == 0
+        mock_run_showcase.assert_called_once()
+        assert mock_run_showcase.call_args.kwargs["output_dir"] == "tmp_showcase"
+        assert mock_run_showcase.call_args.kwargs["write_docs"] is True
+
+    def test_demo_defaults_to_showcase_snapshot(self) -> None:
+        with patch("alphaevo.cli.demo.run_showcase") as mock_run_showcase:
+            result = runner.invoke(app, ["demo"])
+
+        assert result.exit_code == 0
+        mock_run_showcase.assert_called_once()
+
+
 class TestEvolveCommand:
     def test_evolve_applies_runtime_overrides(self, tmp_path: Path) -> None:
         config = _make_config(tmp_path)

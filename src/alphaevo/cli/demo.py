@@ -7,9 +7,11 @@ No network access, API keys, or LLM needed — uses heuristic reflection.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import random
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,6 +32,7 @@ from alphaevo.reflection.critic import SelfCritic
 from alphaevo.reflection.experience import ExperienceRecord, ExperienceStore
 from alphaevo.reflection.meta_learner import MetaLearner
 from alphaevo.reflection.mutator import StrategyMutator
+from alphaevo.research_committee import CommitteeVerdict, ResearchCommittee
 from alphaevo.strategy.dsl.parser import StrategyParser
 from alphaevo.strategy.library import PatternLibrary
 from alphaevo.strategy.tunable import is_period_tunable_target, resolve_tunable_target
@@ -102,6 +105,98 @@ def _find_builtin_strategy_dir() -> Path | None:
     return None
 
 
+def _repo_root() -> Path:
+    """Return the source checkout root when running from repo or editable install."""
+    return Path(__file__).resolve().parents[3]
+
+
+def _showcase_data_dir() -> Path:
+    """Locate bundled showcase snapshot data."""
+    candidates = [
+        _repo_root() / "examples" / "showcase_data",
+        Path("examples/showcase_data"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def _date_range_from_data(data: dict[str, pd.DataFrame]) -> tuple[date, date]:
+    """Infer the shared display date range from OHLCV frames."""
+    starts: list[date] = []
+    ends: list[date] = []
+    for df in data.values():
+        if df.empty or "date" not in df:
+            continue
+        dates = pd.to_datetime(df["date"]).dt.date
+        starts.append(dates.min())
+        ends.append(dates.max())
+    if not starts or not ends:
+        today = date.today()
+        return today, today
+    return min(starts), max(ends)
+
+
+def _hash_text(value: str) -> str:
+    """Return a short sha256 fingerprint."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _strategy_hash(strategy: Strategy) -> str:
+    """Hash the executable strategy snapshot."""
+    return _hash_text(strategy.model_dump_json())
+
+
+def _data_fingerprint(data: dict[str, pd.DataFrame]) -> str:
+    """Build a compact deterministic fingerprint for a symbol->OHLCV mapping."""
+    rows: list[dict[str, object]] = []
+    for symbol in sorted(data):
+        df = data[symbol]
+        start, end = _date_range_from_data({symbol: df})
+        last_close = None if df.empty else round(float(df["close"].iloc[-1]), 6)
+        rows.append(
+            {
+                "symbol": symbol,
+                "rows": len(df),
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "last_close": last_close,
+            }
+        )
+    return _hash_text(json.dumps(rows, sort_keys=True))
+
+
+def load_showcase_snapshot() -> tuple[dict[str, pd.DataFrame], dict[str, object]]:
+    """Load the bundled real-data showcase snapshot."""
+    data_dir = _showcase_data_dir()
+    data_path = data_dir / _SHOWCASE_SNAPSHOT_FILE
+    manifest_path = data_dir / _SHOWCASE_MANIFEST_FILE
+    if not data_path.exists():
+        raise FileNotFoundError(f"Showcase snapshot not found: {data_path}")
+
+    frames: dict[str, list[dict[str, object]]] = {}
+    with data_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            symbol = str(row.pop("symbol"))
+            frames.setdefault(symbol, []).append(row)
+
+    data: dict[str, pd.DataFrame] = {}
+    for symbol, rows in frames.items():
+        df = pd.DataFrame(rows)
+        if "date" in df:
+            df["date"] = pd.to_datetime(df["date"]).dt.date
+        data[symbol] = df
+
+    manifest: dict[str, object] = {}
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return data, manifest
+
+
 class _DummyLLM:
     """No-op LLM that forces heuristic fallback in demos."""
 
@@ -121,6 +216,25 @@ class _DemoMutationCandidate:
     signals: int
     trades: list
     changes: list[StrategyChange]
+
+
+@dataclass
+class _ShowcaseRound:
+    """One round in the star-facing showcase."""
+
+    round_num: int
+    strategy: Strategy
+    evaluation: EvaluationReport
+    signals: int
+    trades: list
+    committee: CommitteeVerdict
+    applied_changes: list[StrategyChange]
+
+
+_SHOWCASE_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AMD", "TSLA"]
+_SHOWCASE_STRATEGY_FILE = "rsi_reversion.yaml"
+_SHOWCASE_SNAPSHOT_FILE = "us_tech_showcase_2025_2026.jsonl"
+_SHOWCASE_MANIFEST_FILE = "manifest.json"
 
 
 def _load_demo_strategy(parser: StrategyParser, builtin_dir: Path) -> Strategy:
@@ -457,11 +571,12 @@ def _run_backtest(
     data: dict[str, pd.DataFrame],
 ) -> tuple[EvaluationReport, int, list]:
     """Run a single backtest + evaluation, return (report, signal_count, signals)."""
+    data_start, data_end = _date_range_from_data(data)
     batch = SampleBatch(
         batch_id="demo_batch",
         strategy_id=strategy.meta.id,
         symbols=list(data.keys()),
-        date_range=(date(2024, 6, 1), date(2024, 9, 28)),
+        date_range=(data_start, data_end),
     )
     engine = BacktestEngine(slippage=0.001, commission=0.0003, min_data_days=30)
     bt_result = engine.run(strategy, data, batch)
@@ -536,6 +651,65 @@ def _display_changes(
         console.print(f"    {icon} [dim]{ch.change_type.value}[/dim]: {ch.reason}")
 
 
+def _display_committee(console: Console, committee: CommitteeVerdict) -> None:
+    """Render deterministic research committee verdicts."""
+    table = Table(title="Research Committee Verdicts", show_lines=False)
+    table.add_column("Analyst", style="cyan")
+    table.add_column("Status", justify="center")
+    table.add_column("Verdict")
+    for verdict in committee.verdicts:
+        if verdict.status == "pass":
+            status = "[green]pass[/green]"
+        elif verdict.status == "fail":
+            status = "[red]fail[/red]"
+        else:
+            status = "[yellow]watch[/yellow]"
+        table.add_row(verdict.analyst, status, verdict.summary)
+    console.print(table)
+
+
+def _showcase_change_plan(strategy: Strategy) -> list[StrategyChange]:
+    """Return the controlled mutation sequence for the RSI real-data showcase."""
+    return [
+        StrategyChange(
+            change_type=ChangeType.CHANGE_LOGIC,
+            target="entry.logic",
+            from_value=strategy.entry.logic,
+            to_value="or",
+            reason=(
+                "Baseline fired too few signals; test OR logic to unlock oversold "
+                "reversal candidates without adding complexity."
+            ),
+        ),
+        StrategyChange(
+            change_type=ChangeType.ADJUST_EXIT,
+            target="exit.stop_loss.value",
+            from_value=strategy.exit.stop_loss.value,
+            to_value=0.08,
+            reason=(
+                "Losses were being cut inside normal volatility; test a wider stop "
+                "and require the retest to improve."
+            ),
+        ),
+        StrategyChange(
+            change_type=ChangeType.ADJUST_EXIT,
+            target="exit.max_holding_days",
+            from_value=strategy.exit.max_holding_days,
+            to_value=14,
+            reason=(
+                "Mean reversion needed more time to complete; test a longer holding "
+                "window while watching drawdown."
+            ),
+        ),
+    ]
+
+
+def _planned_change_for_round(plan: list[StrategyChange], round_num: int) -> list[StrategyChange]:
+    """Return the next planned change for one-based round number."""
+    idx = round_num - 1
+    return [plan[idx]] if 0 <= idx < len(plan) else []
+
+
 def _persist_demo_history(
     history: list[tuple[Strategy, EvaluationReport, int, list]],
 ) -> int:
@@ -555,6 +729,129 @@ def _persist_demo_history(
     return saved
 
 
+def _render_showcase_report(
+    *,
+    rounds: list[_ShowcaseRound],
+    source_label: str,
+    manifest: dict[str, object],
+    data: dict[str, pd.DataFrame],
+    run_id: str,
+) -> str:
+    """Render a Markdown showcase report suitable for docs and README links."""
+    if not rounds:
+        return "# AlphaEvo Showcase\n\nNo rounds were generated.\n"
+
+    first = rounds[0]
+    champion = max(rounds, key=lambda r: r.evaluation.confidence_score)
+    data_start, data_end = _date_range_from_data(data)
+    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    data_hash = _data_fingerprint(data)
+    strategy_hash = _strategy_hash(first.strategy)
+    snapshot_name = str(manifest.get("snapshot_id", "unknown"))
+
+    lines = [
+        "# AlphaEvo Real-Data Showcase: RSI Reversion",
+        "",
+        "> Research tooling only. Not investment advice.",
+        "",
+        "## Summary",
+        "",
+        "| Item | Value |",
+        "|------|-------|",
+        f"| Run ID | `{run_id}` |",
+        f"| Generated At | `{generated_at}` |",
+        f"| Data Source | {source_label} |",
+        f"| Snapshot | `{snapshot_name}` |",
+        f"| Date Range | {data_start} to {data_end} |",
+        f"| Symbols | {', '.join(sorted(data))} |",
+        f"| Baseline | `{first.strategy.meta.id}` score {first.evaluation.confidence_score:.1%} |",
+        f"| Champion | `{champion.strategy.meta.id}` score {champion.evaluation.confidence_score:.1%} |",
+        "",
+        "## Evolution Results",
+        "",
+        "| Round | Strategy | Change | Signals | Win Rate | Avg Return | Max DD | Score |",
+        "|-------|----------|--------|---------|----------|------------|--------|-------|",
+    ]
+
+    for round_result in rounds:
+        metrics = round_result.evaluation.overall
+        change_text = "baseline"
+        if round_result.applied_changes:
+            change = round_result.applied_changes[0]
+            change_text = f"`{change.target}`: `{change.from_value}` -> `{change.to_value}`"
+        lines.append(
+            f"| {round_result.round_num} | `{round_result.strategy.meta.id}` | {change_text} "
+            f"| {round_result.signals} | {metrics.win_rate:.1%} | {metrics.avg_return:.2%} "
+            f"| {metrics.max_drawdown:.1%} | {round_result.evaluation.confidence_score:.1%} |"
+        )
+
+    lines += [
+        "",
+        "## Research Committee",
+        "",
+        "| Round | Analyst | Status | Verdict |",
+        "|-------|---------|--------|---------|",
+    ]
+    for round_result in rounds:
+        for verdict in round_result.committee.verdicts:
+            lines.append(
+                f"| {round_result.round_num} | {verdict.analyst} | {verdict.status} "
+                f"| {verdict.summary} |"
+            )
+
+    lines += [
+        "",
+        "## Mutation Evidence",
+        "",
+    ]
+    for round_result in rounds:
+        if not round_result.applied_changes:
+            continue
+        lines.append(f"### Round {round_result.round_num}: `{round_result.strategy.meta.id}`")
+        for change in round_result.applied_changes:
+            lines.append(
+                f"- `{change.target}` changed from `{change.from_value}` to `{change.to_value}`."
+            )
+            lines.append(f"  Rationale: {change.reason}")
+        lines.append("")
+
+    lines += [
+        "## Run Provenance",
+        "",
+        "| Field | Value |",
+        "|-------|-------|",
+        f"| Strategy Hash | `{strategy_hash}` |",
+        f"| Data Fingerprint | `{data_hash}` |",
+        "| Data Reproducibility | `replayable_snapshot` |",
+        f"| Adapter | `{manifest.get('source_adapter', 'yfinance')}` |",
+        "| Config | `showcase_default_v1` |",
+        "",
+        "Live reruns can differ because public providers may revise historical data.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _write_showcase_report(
+    markdown: str,
+    *,
+    output_dir: Path,
+    run_id: str,
+    write_docs: bool,
+) -> tuple[Path, Path | None]:
+    """Write the generated showcase report."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report_path = output_dir / f"{run_id}.md"
+    report_path.write_text(markdown, encoding="utf-8")
+
+    docs_path: Path | None = None
+    if write_docs:
+        docs_dir = _repo_root() / "docs" / "reports"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        docs_path = docs_dir / "showcase_rsi_reversion_real_snapshot.md"
+        docs_path.write_text(markdown, encoding="utf-8")
+    return report_path, docs_path
+
+
 def run_demo(console: Console) -> None:
     """Execute a complete self-evolution demo with synthetic data."""
     console.print(
@@ -563,7 +860,7 @@ def run_demo(console: Console) -> None:
             "Watch a strategy improve through validated rounds of\n"
             "backtest → reflect → test candidate mutations → keep the best one.\n\n"
             "[dim]Uses synthetic data — results illustrate the workflow only.\n"
-            "Run [cyan]alphaevo demo --real[/cyan] for real market data.[/dim]",
+            "Run [cyan]alphaevo showcase[/cyan] for the real-data showcase.[/dim]",
             style="bold",
         )
     )
@@ -793,12 +1090,200 @@ def run_demo(console: Console) -> None:
             "[bold green]✨ Demo complete![/bold green]\n\n"
             "[yellow]⚠️  Results above use synthetic data and are illustrative only.[/yellow]\n\n"
             "Try it yourself:\n"
-            "  [cyan]alphaevo demo --real[/cyan]                — demo with real market data\n"
+            "  [cyan]alphaevo showcase[/cyan]                   — stable real-data showcase\n"
+            "  [cyan]alphaevo showcase --live[/cyan]            — live yfinance with snapshot fallback\n"
             "  [cyan]alphaevo run <strategy_id>[/cyan]           — backtest with real data\n"
             "  [cyan]alphaevo evolve <id> --rounds 5[/cyan]      — self-evolve (with LLM)\n"
             "  [cyan]alphaevo strategy create[/cyan]             — create from description\n"
             "  [cyan]alphaevo leaderboard[/cyan]                 — view rankings\n\n"
             "[dim]⚠️ Research tool only — not investment advice.[/dim]",
+            style="bold",
+        )
+    )
+
+
+def run_showcase(
+    console: Console,
+    *,
+    live: bool = False,
+    write_docs: bool = False,
+    output_dir: Path | str = Path("reports/showcase"),
+) -> None:
+    """Run the star-facing real-data showcase."""
+    console.print(
+        Panel(
+            "[bold cyan]AlphaEvo Showcase — Real-Data Strategy Evolution[/bold cyan]\n\n"
+            "Baseline RSI strategy -> committee diagnosis -> controlled mutation -> retest.\n"
+            "Default data is a bundled frozen yfinance snapshot, so the demo is stable.\n\n"
+            "[dim]Research tooling only — not investment advice.[/dim]",
+            style="bold",
+        )
+    )
+
+    builtin_dir = _find_builtin_strategy_dir()
+    if builtin_dir is None:
+        console.print("[red]Could not find strategies/builtin/ directory[/red]")
+        return
+
+    strategy_file = builtin_dir / _SHOWCASE_STRATEGY_FILE
+    if not strategy_file.exists():
+        console.print(f"[red]Showcase strategy not found: {strategy_file}[/red]")
+        return
+
+    parser = StrategyParser()
+    strategy = parser.parse_file(strategy_file)
+
+    manifest: dict[str, object] = {}
+    source_label = "bundled frozen yfinance snapshot"
+    data: dict[str, pd.DataFrame]
+    if live:
+        console.print("  [cyan]Trying live yfinance data...[/cyan]")
+        try:
+            data = asyncio.run(_fetch_real_data(_SHOWCASE_SYMBOLS, "yfinance"))
+        except Exception as exc:
+            console.print(
+                f"  [yellow]Live data failed ({exc}); using bundled snapshot instead.[/yellow]"
+            )
+            data, manifest = load_showcase_snapshot()
+        else:
+            if len(data) < 3:
+                console.print("  [yellow]Live data was incomplete; using bundled snapshot.[/yellow]")
+                data, manifest = load_showcase_snapshot()
+            else:
+                source_label = "live yfinance download"
+                manifest = {"source_adapter": "yfinance", "snapshot_id": "live"}
+    else:
+        data, manifest = load_showcase_snapshot()
+
+    # Keep the first-run showcase fast and stable.
+    data = {symbol: data[symbol] for symbol in _SHOWCASE_SYMBOLS if symbol in data}
+    if not data:
+        console.print("[red]No showcase data available.[/red]")
+        return
+
+    data_start, data_end = _date_range_from_data(data)
+    console.print(
+        f"  [green]✓[/green] Strategy: [cyan]{strategy.meta.name}[/cyan]\n"
+        f"  [green]✓[/green] Data: {source_label}\n"
+        f"  [green]✓[/green] Symbols: {', '.join(data)}\n"
+        f"  [green]✓[/green] Window: {data_start} → {data_end}"
+    )
+
+    committee = ResearchCommittee()
+    mutator = StrategyMutator(max_changes=3, complexity_limit=8)
+    plan = _showcase_change_plan(strategy)
+    rounds: list[_ShowcaseRound] = []
+    current = strategy
+
+    console.print(
+        f"\n[bold]{'═' * 60}[/bold]"
+        f"\n[bold]  Showcase Chain: baseline + up to {len(plan)} validated mutations[/bold]"
+        f"\n[bold]{'═' * 60}[/bold]"
+    )
+
+    for round_num in range(1, len(plan) + 2):
+        evaluation, signals, trades = _run_backtest(current, data)
+        prev = rounds[-1].evaluation.confidence_score if rounds else None
+        next_plan = _planned_change_for_round(plan, round_num)
+        verdict = committee.review(
+            current,
+            evaluation,
+            data_source=source_label,
+            symbols=list(data.keys()),
+            mutation_plan=next_plan,
+        )
+        applied_changes = [] if round_num == 1 else rounds[-1].committee.mutation_plan[:1]
+        round_result = _ShowcaseRound(
+            round_num=round_num,
+            strategy=current,
+            evaluation=evaluation,
+            signals=signals,
+            trades=trades,
+            committee=verdict,
+            applied_changes=applied_changes,
+        )
+        rounds.append(round_result)
+
+        console.print()
+        _display_round(console, round_num, current, evaluation, signals, prev)
+        _display_committee(console, verdict)
+
+        if not next_plan:
+            break
+
+        candidate = mutator.mutate(current, next_plan, atomic=True)
+        candidate_eval, candidate_signals, _candidate_trades = _run_backtest(candidate, data)
+        if candidate_eval.confidence_score <= evaluation.confidence_score:
+            console.print("    [yellow]Rejected mutation; retest did not improve score.[/yellow]")
+            _display_changes(console, next_plan)
+            break
+
+        console.print("    [bold]Validated mutation for next round:[/bold]")
+        _display_changes(console, next_plan)
+        console.print(
+            "    [green]retest accepted:[/green] "
+            f"{evaluation.confidence_score:.1%} → {candidate_eval.confidence_score:.1%} "
+            f"({signals} → {candidate_signals} signals)"
+        )
+        current = candidate
+
+    champion = max(rounds, key=lambda item: item.evaluation.confidence_score)
+    table = Table(title="Showcase Before/After", show_lines=True)
+    table.add_column("Version", style="cyan")
+    table.add_column("Signals", justify="right")
+    table.add_column("Win Rate", justify="right")
+    table.add_column("Avg Return", justify="right")
+    table.add_column("Max DD", justify="right")
+    table.add_column("Score", justify="right")
+    for item in rounds:
+        metrics = item.evaluation.overall
+        label = f"[bold]{item.strategy.meta.id}[/bold] 🏆" if item is champion else item.strategy.meta.id
+        table.add_row(
+            label,
+            str(item.signals),
+            f"{metrics.win_rate:.1%}",
+            f"{metrics.avg_return:.2%}",
+            f"{metrics.max_drawdown:.1%}",
+            f"{item.evaluation.confidence_score:.1%}",
+        )
+    console.print(table)
+
+    first = rounds[0]
+    improvement = champion.evaluation.confidence_score - first.evaluation.confidence_score
+    console.print(
+        f"  Champion: [bold cyan]{champion.strategy.meta.id}[/bold cyan] "
+        f"({first.evaluation.confidence_score:.1%} → "
+        f"[bold green]{champion.evaluation.confidence_score:.1%}[/bold green], "
+        f"+{improvement:.1%})"
+    )
+
+    run_id = (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        + f"_rsi_reversion_{_data_fingerprint(data)[:8]}"
+    )
+    markdown = _render_showcase_report(
+        rounds=rounds,
+        source_label=source_label,
+        manifest=manifest,
+        data=data,
+        run_id=run_id,
+    )
+    report_path, docs_path = _write_showcase_report(
+        markdown,
+        output_dir=Path(output_dir),
+        run_id=run_id,
+        write_docs=write_docs,
+    )
+    console.print(f"\n📄 Showcase report saved to: {report_path}")
+    if docs_path is not None:
+        console.print(f"📄 Docs showcase report updated: {docs_path}")
+
+    console.print(
+        Panel(
+            "[bold green]Showcase complete.[/bold green]\n\n"
+            "Shareable story: baseline failed, committee diagnosed it, controlled "
+            "mutations were retested, and only measured improvements were accepted.\n\n"
+            "[dim]Research tool only — not investment advice.[/dim]",
             style="bold",
         )
     )

@@ -25,6 +25,8 @@ _SINGLE_PERIOD_PATTERNS = (
     (r"bollinger_band_width_(\d+)d", "bollinger_band_width_{period}d"),
     (r"price_above_bollinger_upper_(\d+)d", "price_above_bollinger_upper_{period}d"),
     (r"price_below_bollinger_lower_(\d+)d", "price_below_bollinger_lower_{period}d"),
+    (r"breakout_high_(\d+)d", "breakout_high_{period}d"),
+    (r"price_position_(\d+)d", "price_position_{period}d"),
     (r"volume_ratio_1d_(\d+)d", "volume_ratio_1d_{period}d"),
     (r"momentum_(\d+)d", "momentum_{period}d"),
     (r"avg_volume_(\d+)d", "avg_volume_{period}d"),
