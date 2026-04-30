@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ from alphaevo.strategy.dsl.parser import StrategyParser
 from alphaevo.strategy.store import StrategyStore
 
 runner = CliRunner()
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _make_config(tmp_path: Path) -> AppConfig:
@@ -580,11 +582,12 @@ class TestStrategyResearchCommand:
 
     def test_strategy_research_help(self) -> None:
         result = runner.invoke(app, ["strategy", "research", "--help"])
+        help_text = ANSI_RE.sub("", result.stdout)
 
         assert result.exit_code == 0
-        assert "Draft, save, backtest" in result.stdout
-        assert "--optimize-exits" in result.stdout
-        assert "--optimize-params" in result.stdout
+        assert "Draft, save, backtest" in help_text
+        assert "optimize-exits" in help_text
+        assert "optimize-params" in help_text
 
 
 class TestStrategyImproveCommand:
