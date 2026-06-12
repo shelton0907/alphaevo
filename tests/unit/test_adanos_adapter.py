@@ -8,7 +8,8 @@ from datetime import date
 from typing import Any
 from unittest.mock import patch
 
-from alphaevo.data.adapters.adanos import AdanosSentimentAdapter
+from alphaevo.data.adapters import AdanosSentimentAdapter
+from alphaevo.data.adapters.adanos import _negative_score
 from alphaevo.models.enums import MarketType
 
 
@@ -90,6 +91,15 @@ def test_get_event_context_keeps_bullish_score_on_unit_scale():
     assert context is not None
     assert context.records[0].news_sentiment_score == 0.7
     assert context.records[0].negative_news_score == 0.25
+
+
+def test_negative_score_respects_zero_provider_value():
+    negative = _negative_score(
+        0.6,
+        [{"negative_news_score": 0.0, "bearish_score": 80}],
+    )
+
+    assert negative == 0.0
 
 
 def test_get_event_context_skips_non_us_symbols():

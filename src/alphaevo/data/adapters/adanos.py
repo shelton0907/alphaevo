@@ -178,7 +178,12 @@ def _extract_sentiment_score(payload: dict[str, Any]) -> float | None:
 
 def _negative_score(sentiment: float, payloads: list[dict[str, Any]]) -> float:
     for payload in payloads:
-        value = _to_float(payload.get("negative_news_score") or payload.get("bearish_score"))
+        raw_value = (
+            payload["negative_news_score"]
+            if "negative_news_score" in payload
+            else payload.get("bearish_score")
+        )
+        value = _to_float(raw_value)
         if value is not None:
             normalized = _from_unit_score(value)
             if normalized is not None:

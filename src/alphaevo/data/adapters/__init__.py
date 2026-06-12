@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["AkShareAdapter", "DSAAdapter", "YFinanceAdapter"]
+__all__ = ["AdanosSentimentAdapter", "AkShareAdapter", "DSAAdapter", "YFinanceAdapter"]
 
 
 def __getattr__(name: str) -> Any:
@@ -21,4 +21,8 @@ def __getattr__(name: str) -> Any:
         from alphaevo.data.adapters.dsa import DSAAdapter
 
         return DSAAdapter
+    if name == "AdanosSentimentAdapter":
+        from alphaevo.data.adapters.adanos import AdanosSentimentAdapter
+
+        return AdanosSentimentAdapter
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
